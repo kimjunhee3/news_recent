@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>팀 뉴스</title>
+<style>
+/* 상단 툴바 (드롭다운 제거된 레이아웃) */
+.kbo-news .toolbar{max-width:720px;margin:10px auto 6px;padding:0 10px;display:flex;gap:8px;align-items:center;justify-content:flex-end;}
+/* 카드 리스트 */
+.kbo-news .news-container{max-width:720px;margin:6px auto 10px;padding:0 10px;}
+.kbo-news .news-list{display:flex;flex-direction:column;gap:14px;}
+.kbo-news .news-item{
+  display:flex;gap:12px;align-items:flex-start;background:#fff;border-radius:10px;
+  box-shadow:0 1px 6px rgba(0,0,0,.08);padding:10px;
+}
+.kbo-news .news-image-wrapper{
+  width:120px;height:80px;flex:0 0 120px;border-radius:8px;overflow:hidden;background:#eef0f3;
+}
+.kbo-news .news-image-wrapper img{
+  width:100% !important;height:100% !important;object-fit:cover !important;object-position:center !important;
+  display:block !important;max-width:none !important;
+}
+.kbo-news .news-content{flex:1;min-width:0;}
+.kbo-news .news-title{
+  font-weight:700;font-size:16px;margin:2px 0 6px;color:#111827;text-decoration:none;display:block;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;
+}
+.kbo-news .news-title:hover{text-decoration:underline;}
+.kbo-news .news-summary{
+  font-size:13px;color:#4b5563;margin-bottom:6px;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;
+}
+.kbo-news .news-meta{font-size:12px;color:#9ca3af;}
+/* 페이지네이션 */
+.pagination{display:flex;justify-content:center;gap:14px;margin-top:22px;}
+.pagination-btn{
+  background:#2563eb;color:#fff;font-weight:700;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;min-width:84px;
+}
+.pagination-btn:disabled{background:#d1d5db;cursor:not-allowed;}
+.page-info{font-size:14px;color:#374151;font-weight:700;min-width:44px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="kbo-news">
+
+  <!-- 드롭다운 제거: toolbar는 레이아웃 여백 유지 용도로만 남김 -->
+  <div class="toolbar"></div>
+
+  <div class="news-container">
+    <div id="news-list" class="news-list">
+      {% for n in news_list %}
+        <div class="news-item">
+          <div class="news-image-wrapper">
+            {% if n.image %}<img src="{{ n.image }}" alt="썸네일" width="120" height="80">{% endif %}
+          </div>
+          <div class="news-content">
+            <a class="news-title" href="{{ n.link }}" target="_blank" rel="noopener">{{ n.title }}</a>
+            <div class="news-summary">{{ n.summary }}</div>
+            <div class="news-meta">{{ n.press }} | {{ n.time }}</div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="pagination">
+      <button id="prev-btn" class="pagination-btn" onclick="showPrev()" disabled>◀ 이전</button>
+      <span id="page-info" class="page-info">{{ current_page }}/?</span>
+      <button id="next-btn" class="pagination-btn" onclick="showNext()">다음 ▶</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const PER_PAGE = 4;
+// 팀 이름은 서버 템플릿에서 주입 (드롭다운 없음에도 사용 가능)
+let teamName = "{{ team_name|default('') }}";
+
+// 서버에서 총 페이지를 제공하면 사용, 없으면 null
+let totalPages = {{ total_pages|default('null') }};
+if (totalPages !== null) { totalPages = Number(totalPages) || null; } else { totalPages = null; }
+
+// 상태
+let currentPage = Number({{ current_page|default(1) }}) || 1;
+let offset = (currentPage - 1) * PER_PAGE;
+let stack = [];
+let hasMore = true;
+let nextQueue = [];
+
+// 초기 아이템: 서버가 렌더한 기사들(있을 경우)
+function grabInitial(){
+  const nodes = [...document.querySelectorAll('#news-list .news-item')];
+  return nodes.map(n=>({
+    image:(n.querySelector('img')||{}).src||"",
+    title:n.querySelector('.news-title')?.textContent?.trim()||"",
+    link:n.querySelector('.news-title')?.href||"#",
+    summary:n.querySelector('.news-summary')?.textContent?.trim()||"",
+    meta:n.querySelector('.news-meta')?.textContent?.trim()||""
+  }));
+}
+let currentItems = grabInitial();
+
+function escapeHTML(s){return (s||"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+function cardHTML(n){
+  return `<div class="news-item">
+    <div class="news-image-wrapper">${n.image?`<img src="${n.image}" alt="썸네일" width="120" height="80">`:''}</div>
+    <div class="news-content">
+      <a class="news-title" href="${n.link}" target="_blank" rel="noopener">${escapeHTML(n.title)}</a>
+      <div class="news-summary">${escapeHTML(n.summary)}</div>
+      <div class="news-meta">${escapeHTML(n.meta)}</div>
+    </div></div>`;
+}
+
+// page-info 표시: totalPages가 없으면 1로 보여 '?' 대신 '1'
+function updatePageInfo(){
+  const displayTotal = (typeof totalPages === "number" && totalPages > 0) ? totalPages : 1;
+  document.getElementById('page-info').textContent = `${currentPage}/${displayTotal}`;
+}
+function canGoNext(){
+  if (typeof totalPages === "number" && totalPages > 0) return currentPage < totalPages;
+  return (nextQueue.length > 0) || hasMore;
+}
+function setButtons(){
+  const prevBtn = document.getElementById('prev-btn');
+  const nextBtn = document.getElementById('next-btn');
+  if (prevBtn) prevBtn.disabled = (stack.length === 0);
+  if (nextBtn) nextBtn.disabled = !canGoNext();
+}
+function render(list){
+  document.getElementById('news-list').innerHTML = list.map(cardHTML).join("");
+  updatePageInfo();
+  setButtons();
+}
+function chunk(arr, size){ const out=[]; for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size)); return out; }
+
+// ---- 통신 ----
+async function prefetch(nextOffset){
+  try {
+    const res = await fetch(`/api/news?team=${encodeURIComponent(teamName)}&offset=${nextOffset}&buffer=3`);
+    if(!res.ok) return;
+    const d = await res.json();
+    const chunks = chunk(d.items || [], PER_PAGE);
+    nextQueue = nextQueue.concat(chunks);
+    hasMore = !!d.has_more;
+    if (d.pages && !totalPages) totalPages = Number(d.pages) || null;
+    setButtons();
+  } catch (e) {
+    console.error('prefetch error', e);
+  }
+}
+async function fetchTotalPages(){
+  if (typeof totalPages === "number" && totalPages > 0) return;
+  try {
+    const res = await fetch(`/api/news_total?team=${encodeURIComponent(teamName)}`);
+    if(!res.ok) return;
+    const d = await res.json();
+    totalPages = d.pages || 0;
+    if (totalPages && currentPage > totalPages) currentPage = totalPages;
+    updatePageInfo();
+    setButtons();
+  } catch (e) {
+    console.error('fetchTotalPages error', e);
+  }
+}
+
+// ---- 페이지 이동 ----
+async function showNext(){
+  if (typeof totalPages === "number" && totalPages > 0 && currentPage >= totalPages) { setButtons(); return; }
+  if (nextQueue.length === 0){
+    await prefetch(offset + PER_PAGE);
+    if (nextQueue.length === 0){ setButtons(); return; }
+  }
+  stack.push(currentItems);
+  currentItems = nextQueue.shift();
+  offset += PER_PAGE;
+  currentPage += 1;
+  render(currentItems);
+  if (nextQueue.length <= 1 && (typeof totalPages !== "number" || currentPage < totalPages)) {
+    prefetch(offset + PER_PAGE);
+  }
+}
+function showPrev(){
+  if (stack.length === 0) return;
+  nextQueue.unshift(currentItems);
+  currentItems = stack.pop();
+  offset -= PER_PAGE;
+  currentPage -= 1;
+  hasMore = true;
+  render(currentItems);
+}
+
+// ---- 초기화 ----
+render(currentItems);
+prefetch(offset + PER_PAGE);
+fetchTotalPages();
+</script>
+</body>
+</html>
