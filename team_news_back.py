@@ -1,30 +1,34 @@
 # team_news_back.py
 from flask import Blueprint, render_template, request, jsonify
 from team_news import (
-    fetch_team_news, fetch_team_news_fast, get_team_code_map, count_team_news
+    fetch_team_news, fetch_team_news_fast, get_team_code_map,
+    count_team_news, normalize_team_display
 )
 import datetime, time, math
 
 PER_PAGE = 4
-CACHE_TTL_SEC = 600   # 총 페이지 수 캐시 10분
-FAST_TTL_SEC = 120    # 첫 4개 초단기 캐시 2분
+CACHE_TTL_SEC = 600
+FAST_TTL_SEC = 120
 
 news_bp = Blueprint("news", __name__, template_folder="templates")
 
-# (team_code, date) -> (total_count, cached_at_epoch)
 _TOTAL_CACHE: dict[tuple[str, str], tuple[int, float]] = {}
-# (team_code, date) -> (first4_items, cached_at_epoch)
 _FIRST4_CACHE: dict[tuple[str, str], tuple[list, float]] = {}
 
 def _resolve_team_and_date(args):
-    team_name = args.get("team", "롯데")
-    team_code = get_team_code_map().get(team_name, "LT")
+    # 1) team 쿼리를 정규화(영문/별칭 → 표준표기)
+    raw_name = args.get("team", "롯데")
+    team_name = normalize_team_display(raw_name) or "롯데"
+
+    # 2) 코드 매핑
+    code_map = get_team_code_map()
+    team_code = code_map.get(team_name, "LT")
+
     today = datetime.datetime.now().strftime("%Y%m%d")
     return team_name, team_code, today
 
 @news_bp.route("/news")
 def index():
-    """초기 진입/팀 변경 시: requests 기반 초고속 4개 기사 먼저 렌더링."""
     team_name, team_code, today = _resolve_team_and_date(request.args)
     key = (team_code, today)
     now = time.time()
@@ -39,21 +43,18 @@ def index():
 
     return render_template(
         "team_news.html",
-        team_name=team_name,
-        teams=list(get_team_code_map().keys()),
+        team_name=team_name,   # 템플릿/JS가 API 호출할 때 그대로 사용
         news_list=first4,
         current_page=1
     )
 
 @news_bp.route("/api/news")
 def api_news():
-    """offset부터 최대 buffer_pages 페이지(기본 1, 최대 5)를 반환 (Selenium 사용)."""
     offset = int(request.args.get("offset", 0))
     buffer_pages = int(request.args.get("buffer", 1))
     buffer_pages = max(1, min(buffer_pages, 5))
 
     team_name, team_code, today = _resolve_team_and_date(request.args)
-
     need = offset + PER_PAGE * buffer_pages
     items = fetch_team_news(team_code=team_code, date=today, needed_count=need)
 
@@ -69,7 +70,6 @@ def api_news():
 
 @news_bp.route("/api/news_total")
 def api_news_total():
-    """끝까지 스크롤해 카드 총 개수 카운트(10분 캐시)."""
     team_name, team_code, today = _resolve_team_and_date(request.args)
     key = (team_code, today)
     now = time.time()
@@ -82,3 +82,4 @@ def api_news_total():
 
     pages = math.ceil(total / PER_PAGE) if total else 0
     return jsonify({"count": total, "pages": pages, "per_page": PER_PAGE})
+
